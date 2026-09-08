@@ -7,6 +7,8 @@ from langchain_openai import ChatOpenAI
 
 from .base_client import BaseLLMClient, normalize_content, warn_if_truncated
 from .capabilities import get_capabilities
+from .cc_switch_store import ensure_openai_v1_base, resolve_codex_api_key
+from .provider_catalog import CC_SWITCH_CODEX_PROVIDERS, CODEX_PROVIDER_KEYS
 from .validators import validate_model
 
 logger = logging.getLogger(__name__)
@@ -136,6 +138,7 @@ class MinimaxChatOpenAI(NormalizedChatOpenAI):
 _PASSTHROUGH_KWARGS = (
     "timeout", "max_retries", "reasoning_effort", "max_tokens",
     "api_key", "callbacks", "http_client", "http_async_client",
+    "default_headers",
 )
 
 # Provider base URLs and API key env vars
@@ -147,6 +150,18 @@ _PROVIDER_CONFIG = {
     "openrouter": ("https://openrouter.ai/api/v1", "OPENROUTER_API_KEY"),
     "ollama": ("http://localhost:11434/v1", None),
     "minimax": ("https://api.minimax.chat/v1", "MINIMAX_API_KEY"),
+}
+
+# cc-switch Codex providers: (base_url, api_key_envs, user_agent_env, default_api_key, use_responses_api)
+_CC_SWITCH_CODEX_CONFIG = {
+    provider.key: (
+        ensure_openai_v1_base(provider.base_url),
+        provider.api_key_envs,
+        provider.user_agent_env,
+        getattr(provider, "default_api_key", None),
+        provider.use_responses_api,
+    )
+    for provider in CC_SWITCH_CODEX_PROVIDERS
 }
 
 
@@ -203,6 +218,39 @@ class OpenAIClient(BaseLLMClient):
                     "`OPENAI_COMPATIBLE_API_KEY=你的key`（也接受 `OPENAI_API_KEY`），"
                     "设置后重启程序。"
                 )
+        elif self.provider in _CC_SWITCH_CODEX_CONFIG:
+            (
+                default_base,
+                api_key_envs,
+                user_agent_env,
+                default_api_key,
+                use_responses_api,
+            ) = _CC_SWITCH_CODEX_CONFIG[self.provider]
+            selected_base = (
+                default_base
+                if self.provider == "ccswitch"
+                else self.base_url or default_base
+            )
+            llm_kwargs["base_url"] = ensure_openai_v1_base(selected_base)
+            api_key = default_api_key
+            if api_key is None:
+                api_key = resolve_codex_api_key(self.provider, api_key_envs)
+            if api_key:
+                llm_kwargs["api_key"] = api_key
+            elif "api_key" not in self.kwargs:
+                env_hint = " / ".join(api_key_envs) or "provider-specific API key"
+                raise RuntimeError(
+                    f"未找到 {self.provider} 的 API Key。请在 .env 或 cc-switch 中配置 "
+                    f"`{env_hint}` 后重启程序。"
+                )
+            llm_kwargs["default_headers"] = {
+                "User-Agent": os.environ.get(
+                    user_agent_env or "SHAREDCHAT_USER_AGENT",
+                    "Mozilla/5.0",
+                ),
+            }
+            if use_responses_api:
+                llm_kwargs["use_responses_api"] = True
         # Provider-specific base URL and auth. An explicit base_url on the
         # client (e.g. a corporate proxy) takes precedence over the
         # provider default so users can route through their own gateway.
@@ -234,6 +282,7 @@ class OpenAIClient(BaseLLMClient):
 
         # Native OpenAI: use Responses API for consistent behavior across
         # all model families. Third-party providers use Chat Completions.
+        # (cc-switch Codex providers already set this above when enabled.)
         if self.provider == "openai":
             llm_kwargs["use_responses_api"] = True
 

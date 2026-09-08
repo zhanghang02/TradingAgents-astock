@@ -1,6 +1,7 @@
 from typing import Optional
 
 from .base_client import BaseLLMClient
+from .provider_catalog import CLAUDE_PROVIDER_KEYS, CODEX_PROVIDER_KEYS
 
 # Providers that use the OpenAI-compatible chat completions API.
 # "openai_compatible" is the generic pass-through for any relay/gateway that
@@ -10,6 +11,7 @@ from .base_client import BaseLLMClient
 _OPENAI_COMPATIBLE = (
     "openai", "xai", "deepseek", "qwen", "glm", "ollama", "openrouter", "minimax",
     "openai_compatible",
+    *CODEX_PROVIDER_KEYS,
 )
 
 
@@ -43,9 +45,9 @@ def create_llm_client(
         from .openai_client import OpenAIClient
         return OpenAIClient(model, base_url, provider=provider_lower, **kwargs)
 
-    if provider_lower == "anthropic":
+    if provider_lower in CLAUDE_PROVIDER_KEYS or provider_lower == "anthropic":
         from .anthropic_client import AnthropicClient
-        return AnthropicClient(model, base_url, **kwargs)
+        return AnthropicClient(model, base_url, provider=provider_lower, **kwargs)
 
     if provider_lower == "claude_agent_sdk":
         from .claude_agent_sdk_client import ClaudeAgentSDKClient

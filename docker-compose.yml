@@ -24,10 +24,20 @@ services:
       - STREAMLIT_SERVER_ADDRESS=0.0.0.0
       - STREAMLIT_SERVER_PORT=8501
       - STREAMLIT_SERVER_HEADLESS=true
+      - HOME=/home/appuser
+      # Prefer the bind-mounted source over the image-installed package
+      - PYTHONPATH=/home/appuser/app
     ports:
       - "8501:8501"
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
     volumes:
       - tradingagents_data:/home/appuser/.tradingagents
+      # Read API keys / base URLs from the host cc-switch store
+      - ${HOME}/.cc-switch:/home/appuser/.cc-switch:ro
+      # Live-edit code without full rebuild during local ops
+      - .:/home/appuser/app:ro
+    working_dir: /home/appuser/app
 
   ollama:
     image: ollama/ollama:latest

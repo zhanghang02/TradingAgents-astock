@@ -10,6 +10,12 @@ import streamlit as st
 from tradingagents.default_config import DEFAULT_CONFIG
 from tradingagents.graph.checkpointer import clear_checkpoint
 from tradingagents.llm_clients.model_catalog import MODEL_OPTIONS
+from tradingagents.llm_clients.provider_catalog import (
+    CLAUDE_PROVIDER_KEYS,
+    CODEX_PROVIDER_KEYS,
+    GPT_56_MODEL,
+    SELECTABLE_PROVIDERS,
+)
 from web.history import (
     clear_incomplete_task,
     get_history,
@@ -17,8 +23,8 @@ from web.history import (
     record_incomplete_task,
 )
 
-# Provider display names in recommended order
-_PROVIDERS: list[tuple[str, str]] = [
+# cc-switch providers first, then upstream built-in vendors
+_UPSTREAM_PROVIDERS: list[tuple[str, str]] = [
     ("MiniMax（推荐·国内直连）", "minimax"),
     ("DeepSeek", "deepseek"),
     ("通义千问 Qwen", "qwen"),
@@ -32,8 +38,31 @@ _PROVIDERS: list[tuple[str, str]] = [
     ("Ollama（本地）", "ollama"),
 ]
 
+_PROVIDERS: list[tuple[str, str]] = list(SELECTABLE_PROVIDERS) + _UPSTREAM_PROVIDERS
+
 _PROVIDER_DISPLAY = [name for name, _ in _PROVIDERS]
 _PROVIDER_KEYS = [key for _, key in _PROVIDERS]
+
+
+def _default_index(values: list[str], desired: str | None, fallback: int = 0) -> int:
+    if desired in values:
+        return values.index(desired)
+    return fallback
+
+
+def _model_options_for_provider(provider_key: str) -> dict[str, list[tuple[str, str]]]:
+    options = MODEL_OPTIONS.get(provider_key)
+    if options is not None:
+        return options
+
+    if provider_key in CODEX_PROVIDER_KEYS:
+        return {"quick": [GPT_56_MODEL], "deep": [GPT_56_MODEL]}
+
+    if provider_key in CLAUDE_PROVIDER_KEYS:
+        st.error("当前 Claude provider 的模型目录尚未加载，请刷新页面。")
+        st.stop()
+
+    return {}
 
 
 def _resolve_user_input(raw: str) -> tuple[str, str | None]:
@@ -135,19 +164,25 @@ def _render_analysis_controls(raw_ticker: str, trade_date_value: date) -> None:
 def _render_llm_config() -> None:
     """Render LLM provider and model selection controls."""
 
+    default_provider = os.getenv(
+        "TRADINGAGENTS_LLM_PROVIDER",
+        DEFAULT_CONFIG.get("llm_provider", "cc_codex_fastai"),
+    ).lower()
     provider_idx = st.selectbox(
         "LLM 供应商",
         range(len(_PROVIDERS)),
         format_func=lambda i: _PROVIDER_DISPLAY[i],
-        key="llm_provider_idx",
-        help="选择你配置了 API Key 的供应商",
+        index=_default_index(_PROVIDER_KEYS, default_provider),
+        key="llm_provider_idx_v4",
+        help="优先选择 cc-switch 已配置的 Codex/Claude 供应商；也可使用内置厂商",
     )
     provider_key = _PROVIDER_KEYS[provider_idx]
     st.session_state["llm_provider"] = provider_key
 
-    if provider_key in MODEL_OPTIONS:
-        quick_options = MODEL_OPTIONS[provider_key]["quick"]
-        deep_options = MODEL_OPTIONS[provider_key]["deep"]
+    mode_options = _model_options_for_provider(provider_key)
+    if provider_key in MODEL_OPTIONS or mode_options:
+        quick_options = mode_options.get("quick") or MODEL_OPTIONS[provider_key]["quick"]
+        deep_options = mode_options.get("deep") or MODEL_OPTIONS[provider_key]["deep"]
 
         quick_labels = [label for label, _ in quick_options]
         quick_values = [value for _, value in quick_options]
@@ -158,7 +193,14 @@ def _render_llm_config() -> None:
             "快速思考模型",
             range(len(quick_options)),
             format_func=lambda i: quick_labels[i],
-            key="quick_model_idx",
+            index=_default_index(
+                quick_values,
+                os.getenv(
+                    "TRADINGAGENTS_QUICK_MODEL",
+                    DEFAULT_CONFIG.get("quick_think_llm"),
+                ),
+            ),
+            key="quick_model_idx_v4",
             help="用于常规分析任务，速度优先",
         )
         st.session_state["quick_think_llm"] = quick_values[quick_idx]
@@ -167,7 +209,14 @@ def _render_llm_config() -> None:
             "深度思考模型",
             range(len(deep_options)),
             format_func=lambda i: deep_labels[i],
-            key="deep_model_idx",
+            index=_default_index(
+                deep_values,
+                os.getenv(
+                    "TRADINGAGENTS_DEEP_MODEL",
+                    DEFAULT_CONFIG.get("deep_think_llm"),
+                ),
+            ),
+            key="deep_model_idx_v4",
             help="用于辩论/决策等需要深度推理的任务",
         )
         st.session_state["deep_think_llm"] = deep_values[deep_idx]
@@ -183,15 +232,13 @@ def _render_llm_config() -> None:
         key="llm_base_url",
         placeholder="例: https://your-relay.example/v1",
         help=(
-            "通过第三方中转/代理访问模型时填写网关地址；留空则用所选供应商的官方地址。"
-            "API Key 仍从 .env 读取，每个供应商用各自的环境变量——"
-            "OpenAI=OPENAI_API_KEY、DeepSeek=DEEPSEEK_API_KEY、"
-            "通义=DASHSCOPE_API_KEY、智谱=ZHIPU_API_KEY、MiniMax=MINIMAX_API_KEY、"
-            "Claude=ANTHROPIC_API_KEY、OpenRouter=OPENROUTER_API_KEY、xAI=XAI_API_KEY、"
-            "OpenAI 兼容（自定义）=OPENAI_COMPATIBLE_API_KEY（也接受 OPENAI_API_KEY）。"
+            "cc-switch 供应商会自动读取本机 ~/.cc-switch 配置的 base_url / key；"
+            "内置供应商则从 .env 读取各自的 API Key。"
             "也可在 .env 里设 BACKEND_URL 代替此处。"
         ),
     )
+    if provider_key in CODEX_PROVIDER_KEYS or provider_key in CLAUDE_PROVIDER_KEYS:
+        st.caption("已选 cc-switch 供应商：API Key 优先从本机 cc-switch 数据库读取。")
     if base_url_required:
         st.caption(
             "已选「OpenAI 兼容（自定义）」：**Base URL 必填**（你的网关，走标准 Chat "

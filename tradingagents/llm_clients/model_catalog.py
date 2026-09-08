@@ -4,11 +4,36 @@ from __future__ import annotations
 
 from typing import Dict, List, Tuple
 
+from .provider_catalog import (
+    CC_SWITCH_CLAUDE_PROVIDERS,
+    CC_SWITCH_CODEX_PROVIDERS,
+    GPT_56_MODEL,
+)
+
 ModelOption = Tuple[str, str]
 ProviderModeOptions = Dict[str, Dict[str, List[ModelOption]]]
 
 
+def _same_models_for_both_modes(options: List[ModelOption]) -> Dict[str, List[ModelOption]]:
+    return {
+        "quick": options.copy(),
+        "deep": options.copy(),
+    }
+
+
 MODEL_OPTIONS: ProviderModeOptions = {
+    **{
+        provider.key: _same_models_for_both_modes(
+            list(getattr(provider, "models", ()))
+            if getattr(provider, "models", ())
+            else [GPT_56_MODEL]
+        )
+        for provider in CC_SWITCH_CODEX_PROVIDERS
+    },
+    **{
+        provider.key: _same_models_for_both_modes(list(provider.models))
+        for provider in CC_SWITCH_CLAUDE_PROVIDERS
+    },
     "openai": {
         "quick": [
             ("GPT-5.4 Mini - Fast, strong coding and tool use", "gpt-5.4-mini"),
